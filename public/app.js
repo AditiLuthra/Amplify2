@@ -16,6 +16,10 @@ const state = {
   drafts: {},
   jobId: null,
   pollTimer: null,
+  journalists: [],
+  selectedJournalistEmails: new Set(),
+  gmailConnected: false,
+  senderEmail: null,
 };
 
 const IMESSAGE_TEMPLATE = `Hi [first name]! Wanted to send along my next event! No pressure as always to come. Would love if you could share w any friends that may be interested :) [event link or venue + date if no link]`;
@@ -28,8 +32,49 @@ document.querySelectorAll('.tab').forEach((t) => {
     t.classList.add('active');
     document.getElementById('view-' + t.dataset.view).classList.add('active');
     if (t.dataset.view === 'contacts') loadContacts();
+    if (t.dataset.view === 'journalists') loadJournalists();
   });
 });
+
+// ---------- Gmail connection status ----------
+async function checkGmailConnection() {
+  try {
+    const r = await fetch('/api/connection-status');
+    const data = await r.json();
+    state.gmailConnected = data.connected;
+    state.senderEmail = data.senderEmail;
+    renderGmailBanner(data);
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function renderGmailBanner(status) {
+  const banner = document.getElementById('gmail-banner');
+  const text = banner.querySelector('.gmail-banner-text');
+  const link = document.getElementById('gmail-connect-link');
+  const sheetLink = document.getElementById('sheet-link');
+  if (sheetLink && status.sheetUrl) sheetLink.href = status.sheetUrl;
+  if (status.connected) {
+    banner.classList.add('hidden');
+    return;
+  }
+  banner.classList.remove('hidden');
+  const missing = [];
+  if (!status.hasClient) missing.push('Google OAuth credentials');
+  if (!status.hasSheet) missing.push('Sheet ID');
+  if (!status.hasSender) missing.push('sender email');
+  if (!status.hasToken) missing.push('Gmail authorization');
+
+  if (status.hasClient && status.hasSheet && status.hasSender && !status.hasToken) {
+    text.innerHTML = '<strong>Connect your Gmail to start sending emails.</strong> One click.';
+    link.style.display = '';
+  } else {
+    text.innerHTML = `<strong>Setup incomplete.</strong> Missing: ${missing.join(', ')}. Check your env vars.`;
+    link.style.display = 'none';
+  }
+}
+checkGmailConnection();
 
 // ---------- event type toggle ----------
 const eventTypeEl = document.getElementById('event-type');
@@ -252,6 +297,9 @@ document.getElementById('generate-btn').addEventListener('click', async () => {
   } else {
     imPanel.classList.add('hidden');
   }
+
+  // Gmail panel (shown when journalist_email channel is picked AND Gmail is connected)
+  setupGmailSendPanel();
 
   if (!aiChannels.length) return;
 
@@ -502,6 +550,222 @@ async function uploadVcf(file) {
     toast(`imported ${data.added} contact${data.added === 1 ? '' : 's'}`);
     loadContacts();
   } catch (err) { toast(err.message); }
+}
+
+// ---------- journalists tab ----------
+async function loadJournalists() {
+  try {
+    const r = await fetch('/api/journalists');
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'failed to load journalists');
+    state.journalists = data.journalists || [];
+    renderJournalists();
+  } catch (err) {
+    const list = document.getElementById('journalist-list');
+    list.innerHTML = `<li class="hint" style="grid-template-columns:1fr">couldn't load: ${escapeHtml(err.message)}. Make sure Gmail is connected and GOOGLE_SHEET_ID is set.</li>`;
+  }
+}
+
+function renderJournalists() {
+  const searchEl = document.getElementById('j-search');
+  const cityFilter = document.getElementById('j-filter-city').value.trim().toLowerCase();
+  const beatFilter = document.getElementById('j-filter-beat').value.trim().toLowerCase();
+  const q = (searchEl?.value || '').trim().toLowerCase();
+  const list = document.getElementById('journalist-list');
+  const stats = document.getElementById('j-stats');
+
+  let shown = state.journalists;
+  if (cityFilter) shown = shown.filter((j) => (j.city || '').toLowerCase().includes(cityFilter));
+  if (beatFilter) shown = shown.filter((j) => (j.beats || []).some((b) => b.toLowerCase().includes(beatFilter)));
+  if (q) shown = shown.filter((j) =>
+    (j.name || '').toLowerCase().includes(q) ||
+    (j.email || '').toLowerCase().includes(q) ||
+    (j.outlet || '').toLowerCase().includes(q)
+  );
+
+  stats.textContent = `${shown.length} of ${state.journalists.length} journalists`;
+
+  if (!shown.length) {
+    list.innerHTML = '<li class="hint" style="grid-template-columns:1fr">no journalists match these filters.</li>';
+    return;
+  }
+
+  list.innerHTML = shown.map((j) => `
+    <li class="j-row">
+      <div class="j-main">
+        <div class="j-name">${escapeHtml(j.name)}</div>
+        <div class="j-email">${escapeHtml(j.email)}</div>
+      </div>
+      <div class="j-meta">
+        ${j.outlet ? `<div class="j-outlet">${escapeHtml(j.outlet)}</div>` : ''}
+        <div class="j-tags">
+          ${j.city ? `<span class="tag-dot">${escapeHtml(j.city)}</span>` : ''}
+          ${(j.beats || []).map((b) => `<span class="tag-dot beat">${escapeHtml(b)}</span>`).join('')}
+          ${j.relationship ? `<span class="tag-dot rel-${escapeHtml(j.relationship)}">${escapeHtml(j.relationship)}</span>` : ''}
+        </div>
+      </div>
+      <button class="del-btn" data-email="${escapeHtml(j.email)}">remove</button>
+    </li>
+  `).join('');
+  list.querySelectorAll('.del-btn').forEach((b) =>
+    b.addEventListener('click', async () => {
+      if (!confirm(`Remove ${b.dataset.email}?`)) return;
+      const r = await fetch('/api/journalists/' + encodeURIComponent(b.dataset.email), { method: 'DELETE' });
+      if (!r.ok) { toast('delete failed'); return; }
+      loadJournalists();
+    })
+  );
+}
+
+['j-filter-city', 'j-filter-beat', 'j-search'].forEach((id) => {
+  document.getElementById(id)?.addEventListener('input', () => renderJournalists());
+});
+
+document.getElementById('journalist-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const beats = (f.get('beats') || '').toString().split(',').map((s) => s.trim()).filter(Boolean);
+  const tags = (f.get('tags') || '').toString().split(',').map((s) => s.trim()).filter(Boolean);
+  try {
+    const r = await fetch('/api/journalists', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: f.get('name'), email: f.get('email'),
+        outlet: f.get('outlet'), city: f.get('city'),
+        relationship: f.get('relationship'),
+        beats, tags, notes: f.get('notes'),
+      }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error);
+    e.target.reset();
+    toast('added ' + f.get('name'));
+    loadJournalists();
+  } catch (err) { toast(err.message); }
+});
+
+// ---------- Gmail send from Drafts step ----------
+function setupGmailSendPanel() {
+  const panel = document.getElementById('gmail-panel');
+  if (!state.channels.has('journalist_email')) { panel.classList.add('hidden'); return; }
+  if (!state.gmailConnected) {
+    panel.classList.add('hidden');
+    toast('Connect Gmail to send journalist emails');
+    return;
+  }
+  panel.classList.remove('hidden');
+  document.getElementById('gm-sender').textContent = state.senderEmail || '(sender)';
+  state.selectedJournalistEmails.clear();
+  loadJournalists().then(() => renderGmailRecipients());
+}
+
+function renderGmailRecipients() {
+  const cityFilter = document.getElementById('gm-filter-city').value.trim().toLowerCase();
+  const beatFilter = document.getElementById('gm-filter-beat').value.trim().toLowerCase();
+  const container = document.getElementById('gm-recipients');
+  let list = state.journalists;
+  if (cityFilter) list = list.filter((j) => (j.city || '').toLowerCase().includes(cityFilter));
+  if (beatFilter) list = list.filter((j) => (j.beats || []).some((b) => b.toLowerCase().includes(beatFilter)));
+  if (!list.length) {
+    container.innerHTML = '<div class="hint">no journalists match. add some in the Journalists tab or widen the filter.</div>';
+    updateGmailCount();
+    return;
+  }
+  container.innerHTML = list.map((j) => `
+    <label class="gm-row">
+      <input type="checkbox" data-email="${escapeHtml(j.email)}" ${state.selectedJournalistEmails.has(j.email) ? 'checked' : ''} />
+      <div>
+        <strong>${escapeHtml(j.name)}</strong>
+        <span class="j-email">${escapeHtml(j.email)}</span>
+        ${j.outlet ? `<span class="j-outlet">${escapeHtml(j.outlet)}</span>` : ''}
+      </div>
+      <div class="j-tags">
+        ${j.city ? `<span class="tag-dot">${escapeHtml(j.city)}</span>` : ''}
+        ${(j.beats || []).slice(0, 3).map((b) => `<span class="tag-dot beat">${escapeHtml(b)}</span>`).join('')}
+      </div>
+    </label>
+  `).join('');
+  container.querySelectorAll('input[type="checkbox"]').forEach((i) => {
+    i.addEventListener('change', () => {
+      if (i.checked) state.selectedJournalistEmails.add(i.dataset.email);
+      else state.selectedJournalistEmails.delete(i.dataset.email);
+      updateGmailCount();
+    });
+  });
+  updateGmailCount();
+}
+
+function updateGmailCount() {
+  const n = state.selectedJournalistEmails.size;
+  document.getElementById('gm-count').textContent = `${n} selected`;
+  document.getElementById('gm-send-btn').disabled = n === 0;
+}
+
+['gm-filter-city', 'gm-filter-beat'].forEach((id) => {
+  document.getElementById(id)?.addEventListener('input', () => renderGmailRecipients());
+});
+
+document.getElementById('gm-send-btn').addEventListener('click', async () => {
+  const draft = state.drafts.journalist_email || '';
+  if (!draft) { toast('no journalist_email draft to send'); return; }
+  const { subject, body } = splitSubjectBody(draft);
+  if (!subject || !body) {
+    toast('draft must start with a "Subject: ..." line');
+    return;
+  }
+  const recipients = state.journalists.filter((j) => state.selectedJournalistEmails.has(j.email));
+  if (!recipients.length) return;
+  if (!confirm(`Send this email to ${recipients.length} journalists?`)) return;
+
+  const btn = document.getElementById('gm-send-btn');
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+  const progress = document.getElementById('gm-progress');
+  progress.innerHTML = recipients.map((j) => `
+    <div class="im-row" data-email="${escapeHtml(j.email)}">
+      <div><strong>${escapeHtml(j.name)}</strong> <span class="phone">${escapeHtml(j.email)}</span></div>
+      <div></div>
+      <div class="im-status queued">queued</div>
+    </div>
+  `).join('');
+
+  for (const j of recipients) {
+    const row = progress.querySelector(`.im-row[data-email="${CSS.escape(j.email)}"]`);
+    row.querySelector('.im-status').textContent = 'sending';
+    row.querySelector('.im-status').className = 'im-status sending';
+    try {
+      const r = await fetch('/api/send-email', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: j.email,
+          subject,
+          body,
+          journalist_name: j.name,
+          event_name: state.event.name,
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'send failed');
+      row.querySelector('.im-status').textContent = 'sent';
+      row.querySelector('.im-status').className = 'im-status sent';
+    } catch (err) {
+      row.querySelector('.im-status').textContent = 'error';
+      row.querySelector('.im-status').className = 'im-status error';
+      row.children[1].innerHTML = `<span class="hint" title="${escapeHtml(err.message)}">${escapeHtml(err.message)}</span>`;
+    }
+    // brief delay between sends, just to be a good citizen
+    await new Promise((r) => setTimeout(r, 800));
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Send again';
+  toast('Gmail batch complete');
+});
+
+function splitSubjectBody(draft) {
+  const m = draft.match(/^\s*Subject:\s*(.+?)\r?\n([\s\S]*)$/);
+  if (!m) return { subject: '', body: '' };
+  return { subject: m[1].trim(), body: m[2].trim() };
 }
 
 // ---------- helpers ----------

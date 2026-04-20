@@ -18,9 +18,15 @@
     </div>
     <nav class="tabs">
       <button class="tab active" data-view="flow">Compose</button>
+      <button class="tab" data-view="journalists">Journalists</button>
       <button class="tab" data-view="contacts">Contacts</button>
     </nav>
   </header>
+
+  <div id="gmail-banner" class="gmail-banner hidden">
+    <div class="gmail-banner-text"></div>
+    <a id="gmail-connect-link" href="/auth/google" class="btn ghost small">Connect Gmail</a>
+  </div>
 
   <main id="app">
     <!-- ============ FLOW VIEW ============ -->
@@ -186,6 +192,28 @@
 
         <div id="drafts"></div>
 
+        <div id="gmail-panel" class="imessage-panel hidden">
+          <div class="im-header">
+            <div>
+              <div class="c-title">Send journalist email via Gmail</div>
+              <div class="c-sub">Sends from your <code id="gm-sender"></code>. Each email is personalized per recipient.</div>
+            </div>
+          </div>
+          <div class="field">
+            <label>Filter recipients</label>
+            <div class="grid-2 inner">
+              <input type="text" id="gm-filter-city" placeholder="city (e.g. NYC)" />
+              <input type="text" id="gm-filter-beat" placeholder="beat (e.g. food)" />
+            </div>
+          </div>
+          <div id="gm-recipients" class="gm-recipients"></div>
+          <div class="im-header" style="margin-top: 12px;">
+            <div class="hint" id="gm-count">0 selected</div>
+            <button id="gm-send-btn" class="btn accent-blue" disabled>Send to selected</button>
+          </div>
+          <div id="gm-progress" class="im-progress"></div>
+        </div>
+
         <div id="imessage-panel" class="imessage-panel hidden">
           <div class="im-header">
             <div>
@@ -202,6 +230,79 @@
           <button type="button" class="btn ghost" id="restart">Start over</button>
         </div>
       </section>
+    </section>
+
+    <!-- ============ JOURNALISTS VIEW ============ -->
+    <section id="view-journalists" class="view">
+      <h1 class="display">Journalists.</h1>
+      <p class="sub">Your database of local reporters, by city and beat. Data lives in your Google Sheet on Drive.</p>
+
+      <div class="grid-2">
+        <form id="journalist-form" class="card">
+          <div class="field">
+            <label>Name</label>
+            <input type="text" name="name" required placeholder="Priya Krishna" />
+          </div>
+          <div class="field">
+            <label>Email</label>
+            <input type="email" name="email" required placeholder="priya@example.com" />
+          </div>
+          <div class="field">
+            <label>Outlet</label>
+            <input type="text" name="outlet" placeholder="NYT Food" />
+          </div>
+          <div class="grid-2 inner">
+            <div class="field">
+              <label>City</label>
+              <input type="text" name="city" placeholder="NYC" />
+            </div>
+            <div class="field">
+              <label>Relationship</label>
+              <select name="relationship">
+                <option value="cold">cold</option>
+                <option value="warm">warm</option>
+                <option value="replied">replied</option>
+                <option value="declined">declined</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label>Beats <span class="hint">comma separated, e.g. food, dining, markets</span></label>
+            <input type="text" name="beats" placeholder="food, nightlife" />
+          </div>
+          <div class="field">
+            <label>Tags <span class="hint">comma separated — any labels you want</span></label>
+            <input type="text" name="tags" placeholder="freelance, newsletter" />
+          </div>
+          <div class="field">
+            <label>Notes</label>
+            <textarea name="notes" rows="3" placeholder="covers Indian food, loves pop-ups"></textarea>
+          </div>
+          <button class="btn primary" type="submit">Add journalist</button>
+        </form>
+
+        <div class="card">
+          <div class="field">
+            <label>Filter the list</label>
+            <div class="grid-2 inner">
+              <input type="text" id="j-filter-city" placeholder="city (e.g. NYC)" />
+              <input type="text" id="j-filter-beat" placeholder="beat (e.g. food)" />
+            </div>
+          </div>
+          <div id="j-stats" class="hint"></div>
+          <div class="hint" style="margin-top: 12px;">
+            💡 Need to edit a journalist? Open your <a id="sheet-link" href="#" target="_blank">Amplify Data sheet</a> in Drive and edit there — changes show up here on next refresh.
+          </div>
+        </div>
+      </div>
+
+      <div class="card contacts-card">
+        <div class="contacts-head">
+          <strong>All journalists</strong>
+          <input type="search" id="j-search" placeholder="search name, email, outlet" />
+        </div>
+        <ul id="journalist-list" class="contact-list journalist-list"></ul>
+      </div>
     </section>
 
     <!-- ============ CONTACTS VIEW ============ -->
