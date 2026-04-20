@@ -729,9 +729,15 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Amplify running at http://localhost:${PORT}`);
-  if (!process.env.ANTHROPIC_API_KEY) {
-    console.warn('⚠  ANTHROPIC_API_KEY not set. Copy .env.example to .env and add your key.');
-  }
-});
+// When running on Vercel, export the app and let Vercel handle the server.
+// Locally (and anywhere else), start a listener.
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`Amplify running at http://localhost:${PORT}`);
+    if (!process.env.ANTHROPIC_API_KEY) {
+      console.warn('⚠  ANTHROPIC_API_KEY not set. Copy .env.example to .env and add your key.');
+    }
+  });
+}
+
+export default app;
