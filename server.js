@@ -15,8 +15,14 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 const CONTACTS_PATH = path.join(__dirname, 'contacts.json');
-const MODEL = 'claude-opus-4-5';
-const FAST_MODEL = 'claude-sonnet-4-5';
+const MODEL = 'claude-haiku-4-5-20251001';
+
+const EMAIL_SIGNATURE = `--
+Aditi Luthra
+Co-Founder, Pitara Co. — ethically-sourced South Indian coffee
+
+pitaraco.com · 832.248.1629
+Instagram @pitaraco · TikTok @pitaraco`;
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -203,7 +209,7 @@ async function sendGmail({ to, subject, body }) {
   const gmail = getGmail();
   const from = process.env.SENDER_EMAIL;
   if (!from) throw new Error('SENDER_EMAIL not set');
-  const raw = base64UrlEncode(buildMimeMessage({ from, to, subject, body }));
+  const raw = base64UrlEncode(buildMimeMessage({ from, to, subject, body: body + '\n\n' + EMAIL_SIGNATURE }));
   const res = await gmail.users.messages.send({
     userId: 'me',
     requestBody: { raw },
@@ -549,90 +555,93 @@ function extractJSON(text) {
   }
 }
 
-// ---------- draft generation ----------
+// ---------- helpers for eventbrite ----------
 
-const CHANNEL_SPECS = {
-  journalist_email: {
-    label: 'Journalist email',
-    guidance: `A short, direct pitch email to a local culture journalist. Subject line on first line prefixed with "Subject: ". Keep it 120–180 words. Lead with the hook, then a sentence of context, then the practical details (day, date, time, venue, address). Close with a warm sign-off and offer to share imagery or set up an interview. No hype words, no emoji.`,
-  },
-  subscriber_email: {
-    label: 'Shopify subscriber email',
-    guidance: `An email to the brand's Shopify subscriber list. Subject line on first line prefixed with "Subject: ". 90–140 words. Friendly, inviting, first-person-plural. Preserve the blurb verbatim as one paragraph, surround it with a warm opening and a clear CTA line listing day, date, time, venue, address. End with a PS that feels human.`,
-  },
-  reddit_nyc: {
-    label: 'Reddit — r/nyc + r/queens',
-    guidance: `Two short Reddit posts, one for r/nyc and one for r/queens. Format as:\n\nr/nyc\nTitle: ...\nBody: ...\n\nr/queens\nTitle: ...\nBody: ...\n\nNo self-promo tone. Conversational, low-key, "hey, this is happening, come hang" energy. 60–110 words per body. Always list day, date, time, venue, address. No emoji.`,
-  },
-  whatsapp_broadcast: {
-    label: 'WhatsApp broadcast draft',
-    guidance: `A single WhatsApp broadcast message. Warm, short (50–80 words), 1–2 line breaks max. Lead with the event name, then the blurb in the organizer's words (lightly trimmed only if needed), then day, date, time, venue, address on separate lines. End with one line inviting forwarding.`,
-  },
-  substack_post: {
-    label: 'Substack post draft',
-    guidance: `A Substack post. Title on first line prefixed with "Title: ". 200–320 words, 2–4 short paragraphs. Opens with scene/voice, keeps the organizer's blurb intact as its own paragraph, and lands with practical details: day, date, time, venue, address, and how to RSVP/attend. Warm, essayistic, personal.`,
-  },
-  eventbrite_listing: {
-    label: 'Eventbrite listing',
-    guidance: `A full Eventbrite listing. Format:\n\nTitle: ...\nSummary (under 140 chars): ...\nDescription: 2–3 short paragraphs, preserving the organizer's blurb verbatim as one paragraph.\nDetails:\n- Day & date\n- Time\n- Venue\n- Address\n\nNo price, no ticket tiers — those are set in Eventbrite.`,
-  },
-  partiful_copy: {
-    label: 'Partiful invite copy',
-    guidance: `Partiful invite copy. Format:\n\nEvent name: ...\nTagline (one line, under 80 chars): ...\nDescription: 40–90 words, playful, preserves the organizer's voice. Include day, date, time, venue, address on their own lines at the end.`,
-  },
-};
+function nyTimeToUtc(dateStr, timeStr) {
+  const probe = new Date(`${dateStr}T12:00:00Z`);
+  const nyHour = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', hour: 'numeric', hour12: false,
+  }).format(probe);
+  const offsetH = 12 - parseInt(nyHour, 10);
+  const [y, mo, d] = dateStr.split('-').map(Number);
+  const [h, m] = timeStr.split(':').map(Number);
+  return new Date(Date.UTC(y, mo - 1, d, h + offsetH, m)).toISOString().slice(0, 19) + 'Z';
+}
 
-app.post('/api/generate-drafts', async (req, res) => {
+function escapeHtmlServer(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function textToHtml(text) {
+  return '<p>' + escapeHtmlServer(text).replace(/\n\n+/g, '</p><p>').replace(/\n/g, '<br>') + '</p>';
+}
+
+// ---------- send log ----------
+
+app.get('/api/send-log', async (_req, res) => {
   try {
-    const { event, channels, eventType } = req.body || {};
-    if (!event) return res.status(400).json({ error: 'event required' });
-    const selected = (channels || []).filter((c) => CHANNEL_SPECS[c]);
-    if (!selected.length) return res.json({ drafts: {} });
+    const sheets = getSheets();
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetId(),
+      range: 'send_log!A1:Z',
+    });
+    const entries = rowsToObjects(r.data.values || [], SEND_LOG_COLS);
+    res.json({ entries: entries.reverse() });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
-    const dayOfWeek = computeDayOfWeek(event.date);
-    const timeStr = event.time_end
-      ? `${event.time_start}–${event.time_end}`
-      : `${event.time_start} (open end)`;
+// ---------- eventbrite publish ----------
 
-    const context = `EVENT BRIEF
-Name: ${event.name}
-Day: ${dayOfWeek}
-Date: ${event.date}
-Time: ${timeStr}
-Venue: ${event.venue_name}
-Address: ${event.address}
-Event type: ${eventType || 'my_event'}
+app.post('/api/eventbrite/publish', async (req, res) => {
+  try {
+    const token = process.env.EVENTBRITE_TOKEN;
+    if (!token) return res.status(400).json({ error: 'EVENTBRITE_TOKEN not set. Add it in your Vercel env vars.' });
 
-Organizer's blurb (DO NOT REWRITE — use exact words, only adjust length/framing):
-"""
-${event.blurb || ''}
-"""
+    const { event, draft } = req.body || {};
+    if (!event || !draft) return res.status(400).json({ error: 'event and draft required' });
+    if (!event.date || !event.time_start) return res.status(400).json({ error: 'event must have date and start time' });
 
-GLOBAL RULES
-- Never rewrite the organizer's voice. Adapt length and framing only. Use their exact words.
-- Always include day, date, time, venue name, and address somewhere in the draft.
-- Plain text only. No markdown headers unless specified. No emoji unless the blurb already uses them.
-- Do not invent facts (prices, performers, RSVP links) that aren't in the brief.`;
+    const titleMatch = draft.match(/^Title:\s*(.+)/im);
+    const title = titleMatch ? titleMatch[1].trim() : (event.name || 'Untitled Event');
 
-    const results = await Promise.all(
-      selected.map(async (channelKey) => {
-        const spec = CHANNEL_SPECS[channelKey];
-        const prompt = `${context}\n\nCHANNEL: ${spec.label}\n${spec.guidance}\n\nReturn only the draft text, nothing else.`;
-        try {
-          const resp = await anthropic.messages.create({
-            model: FAST_MODEL,
-            max_tokens: 1200,
-            messages: [{ role: 'user', content: prompt }],
-          });
-          return [channelKey, extractText(resp).trim()];
-        } catch (err) {
-          return [channelKey, `[error generating draft: ${err.message}]`];
-        }
-      })
-    );
+    const summaryMatch = draft.match(/^Summary[^:]*:\s*(.+)/im);
+    const summary = summaryMatch ? summaryMatch[1].trim().slice(0, 140) : '';
 
-    const drafts = Object.fromEntries(results);
-    res.json({ drafts });
+    const startUtc = nyTimeToUtc(event.date, event.time_start);
+    const endUtc = event.time_end
+      ? nyTimeToUtc(event.date, event.time_end)
+      : nyTimeToUtc(event.date, event.time_start);
+
+    const payload = {
+      event: {
+        name: { html: escapeHtmlServer(title) },
+        description: { html: textToHtml(draft) },
+        ...(summary && { summary }),
+        start: { utc: startUtc, timezone: 'America/New_York' },
+        end: { utc: endUtc, timezone: 'America/New_York' },
+        currency: 'USD',
+        listed: false,
+        shareable: true,
+        online_event: false,
+      },
+    };
+
+    const r = await fetch('https://www.eventbriteapi.com/v3/events/', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await r.json();
+    if (!r.ok) return res.status(502).json({ error: data.error_description || data.error || 'Eventbrite error' });
+
+    res.json({ ok: true, url: data.url, id: data.id });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });

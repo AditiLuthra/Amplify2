@@ -33,6 +33,7 @@ document.querySelectorAll('.tab').forEach((t) => {
     document.getElementById('view-' + t.dataset.view).classList.add('active');
     if (t.dataset.view === 'contacts') loadContacts();
     if (t.dataset.view === 'journalists') loadJournalists();
+    if (t.dataset.view === 'sent') loadSendLog();
   });
 });
 
@@ -242,54 +243,223 @@ document.querySelectorAll('.channel-card').forEach((card) => {
 
 async function loadContactsForImessage() {
   await loadContacts();
-  renderGroupChips();
   renderImessagePreview();
-}
-
-function renderGroupChips() {
-  const tags = new Set();
-  state.contacts.forEach((c) => (c.tags || []).forEach((t) => tags.add(t)));
-  const container = document.getElementById('group-chips');
-  if (!tags.size) {
-    container.innerHTML = '<span class="hint">no groups yet — add tagged contacts in the Contacts tab</span>';
-    return;
-  }
-  container.innerHTML = Array.from(tags).sort().map((tag) => `
-    <label class="chip"><input type="checkbox" data-tag="${escapeHtml(tag)}" ${state.selectedGroups.has(tag) ? 'checked' : ''}/> ${escapeHtml(tag)}</label>
-  `).join('');
-  container.querySelectorAll('input').forEach((i) => {
-    i.addEventListener('change', () => {
-      if (i.checked) state.selectedGroups.add(i.dataset.tag);
-      else state.selectedGroups.delete(i.dataset.tag);
-      renderImessagePreview();
-    });
-  });
 }
 
 function renderImessagePreview() {
   const preview = document.getElementById('imessage-preview');
-  const selected = getImessageRecipients();
-  const example = IMESSAGE_TEMPLATE.replace('[first name]', selected[0]?.name.split(' ')[0] || 'Jamie');
-  preview.textContent = `${selected.length} recipient${selected.length === 1 ? '' : 's'} · 45–90s delay between sends\n\nPreview:\n${example}`;
+  const all = state.contacts;
+  const example = IMESSAGE_TEMPLATE.replace('[first name]', all[0]?.name.split(' ')[0] || 'Jamie');
+  preview.textContent = `Sending to all ${all.length} contact${all.length === 1 ? '' : 's'} · 45–90s delay between sends\n\nPreview:\n${example}`;
 }
 
 function getImessageRecipients() {
-  if (!state.selectedGroups.size) return [];
-  return state.contacts.filter((c) => (c.tags || []).some((t) => state.selectedGroups.has(t)));
+  return state.contacts;
 }
 
-// ---------- generate drafts ----------
-document.getElementById('generate-btn').addEventListener('click', async () => {
+// ---------- channel specs + draft system ----------
+
+function computeDayOfWeek(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr + 'T12:00:00');
+  if (isNaN(d)) return '';
+  return d.toLocaleDateString('en-US', { weekday: 'long' });
+}
+
+const CHANNEL_SPECS = {
+  journalist_email: {
+    label: 'Journalist email',
+    guidance: '120–180 words. Subject: line first. Hook → context → details (day, date, time, venue, address) → warm sign-off. Greet as "Hi {{first_name}}," — the app replaces it per recipient.',
+    promptTemplate: `Write a short pitch email to a local culture journalist.
+
+Event: {{name}}
+Day/Date: {{day}}, {{date}}
+Time: {{time}}
+Venue: {{venue_name}}
+Address: {{address}}
+Organizer's blurb (use verbatim, don't rewrite): "{{blurb}}"
+
+Requirements:
+- First line: Subject: [compelling subject line]
+- 120–180 words total
+- Open with the hook — the most interesting thing about this event
+- One sentence of context (who organizes it, what makes it special)
+- Practical details: day, date, time, venue, address
+- Warm sign-off; offer to share imagery or set up an interview
+- Greeting: Hi {{first_name}}, (the app personalizes this per recipient)
+- No hype words, no buzzwords, no emoji
+- Plain text only, no markdown`,
+  },
+  subscriber_email: {
+    label: 'Shopify subscriber email',
+    guidance: '90–140 words. Subject: line first. Blurb verbatim as its own paragraph. First-person-plural. End with a human PS.',
+    promptTemplate: `Write an email to a brand's Shopify subscriber list.
+
+Event: {{name}}
+Day/Date: {{day}}, {{date}}
+Time: {{time}}
+Venue: {{venue_name}}
+Address: {{address}}
+Blurb (preserve these exact words as a paragraph): "{{blurb}}"
+
+Requirements:
+- First line: Subject: [warm, personal subject line]
+- 90–140 words
+- Friendly, inviting, first-person-plural ("join us", "come hang with us")
+- Include the blurb verbatim as its own paragraph
+- Clear CTA line listing day, date, time, venue, address
+- End with a PS that feels human and personal
+- Plain text only`,
+  },
+  reddit_nyc: {
+    label: 'Reddit — NYC subreddits',
+    guidance: 'Suggest 2–4 subreddits where this fits (always r/nyc + relevant others). Write a tailored post per sub. 60–110 words each. Conversational, no self-promo energy.',
+    promptTemplate: `I need to post about a NYC event on Reddit. Suggest 2–4 subreddits where this genuinely fits (always include r/nyc; also consider r/queens, r/FoodNYC, r/Coffee, r/brooklyn, r/nycmeetups, r/AskNYC depending on the event). For each, note whether small-business/event posts are allowed. Then write a post for each.
+
+Event: {{name}}
+Day/Date: {{day}}, {{date}}
+Time: {{time}}
+Venue: {{venue_name}}
+Address: {{address}}
+Blurb: "{{blurb}}"
+
+For each subreddit, format as:
+---
+r/[name] — [why it fits + whether event posts are ok, one sentence]
+Title: [post title]
+Body: [60–110 words. Conversational, low-key "hey this is happening, come hang" energy. Day, date, time, venue, address included. No emoji, no self-promo tone]
+---`,
+  },
+  whatsapp_broadcast: {
+    label: 'WhatsApp broadcast',
+    guidance: '50–80 words. Lead with event name + blurb (exact words). Details on separate lines. End inviting forwarding.',
+    promptTemplate: `Write a WhatsApp broadcast message for this event.
+
+Event: {{name}}
+Day/Date: {{day}}, {{date}}
+Time: {{time}}
+Venue: {{venue_name}}
+Address: {{address}}
+Blurb (preserve exact words): "{{blurb}}"
+
+Requirements:
+- 50–80 words total
+- Lead with the event name and blurb (trim only if needed for length)
+- Day, date, time, venue, address on their own lines at the end
+- End with one line inviting people to forward to friends
+- Warm but short, plain text`,
+  },
+  substack_post: {
+    label: 'Substack post',
+    guidance: '200–320 words, 2–4 paragraphs. Title: line first. Scene-setting open → blurb verbatim → practical close.',
+    promptTemplate: `Write a Substack post about this event.
+
+Event: {{name}}
+Day/Date: {{day}}, {{date}}
+Time: {{time}}
+Venue: {{venue_name}}
+Address: {{address}}
+Blurb (use verbatim as its own paragraph, do not edit): "{{blurb}}"
+
+Requirements:
+- First line: Title: [evocative title]
+- 200–320 words, 2–4 short paragraphs
+- Open with scene-setting or a voice that pulls the reader in
+- Blurb verbatim as its own paragraph
+- End with practical details: day, date, time, venue, address, how to attend
+- Warm, essayistic, personal tone
+- Plain text (no markdown headers, no bullet points)`,
+  },
+  eventbrite_listing: {
+    label: 'Eventbrite listing',
+    guidance: 'Title + Summary (<140 chars) + Description (blurb verbatim) + Details block. No price or ticket tiers.',
+    promptTemplate: `Write an Eventbrite event listing.
+
+Event: {{name}}
+Day/Date: {{day}}, {{date}}
+Time: {{time}}
+Venue: {{venue_name}}
+Address: {{address}}
+Blurb (use verbatim as one paragraph): "{{blurb}}"
+
+Format exactly as:
+Title: [event title]
+Summary (under 140 chars): [one-line summary]
+Description:
+[2–3 short paragraphs. Include the blurb verbatim as its own paragraph.]
+
+Details:
+- Day & date: {{day}}, {{date}}
+- Time: {{time}}
+- Venue: {{venue_name}}
+- Address: {{address}}
+
+Do not include price, ticket tiers, or ticket links — those are added in Eventbrite directly.`,
+  },
+  partiful_copy: {
+    label: 'Partiful invite',
+    guidance: 'Event name + Tagline (<80 chars) + Description (40–90 words, your voice, details at end).',
+    promptTemplate: `Write Partiful event invite copy.
+
+Event: {{name}}
+Day/Date: {{day}}, {{date}}
+Time: {{time}}
+Venue: {{venue_name}}
+Address: {{address}}
+Blurb (preserve the organizer's voice): "{{blurb}}"
+
+Format exactly as:
+Event name: [name]
+Tagline (one line, under 80 chars): [catchy tagline]
+Description: [40–90 words, playful, organizer's voice preserved. End with day, date, time, venue, and address on their own lines]`,
+  },
+  instagram: {
+    label: 'Instagram post + story',
+    guidance: 'Caption (150–220 chars + hashtags) + Story text (<50 chars). Graphic auto-generates below — download and geo-tag manually in the Instagram app.',
+    promptTemplate: `Write Instagram content for this event.
+
+Event: {{name}}
+Day/Date: {{day}}, {{date}}
+Time: {{time}}
+Venue: {{venue_name}}
+Address: {{address}}
+Blurb (preserve exact voice): "{{blurb}}"
+
+Write two versions:
+
+1. CAPTION (150–220 characters + hashtags):
+- Hook first (most interesting thing)
+- Practical details (day, date, time, venue)
+- 6–10 hashtags: mix of specific (#PitaraCo #SouthIndianCoffee) and discoverable (#NYCfood #PopUpNYC #Brooklyn etc.)
+- Organizer's voice, no generic phrases
+
+2. STORY TEXT (under 50 characters):
+- Very short teaser for the story graphic
+- Should make someone tap to see more`,
+  },
+};
+
+function buildDraftPrompt(key, event) {
+  const spec = CHANNEL_SPECS[key];
+  if (!spec?.promptTemplate) return '';
+  const day = computeDayOfWeek(event.date);
+  const time = event.time_end ? `${event.time_start}–${event.time_end}` : (event.time_start || '');
+  return spec.promptTemplate
+    .replace(/\{\{name\}\}/g, event.name || '')
+    .replace(/\{\{day\}\}/g, day)
+    .replace(/\{\{date\}\}/g, event.date || '')
+    .replace(/\{\{time\}\}/g, time)
+    .replace(/\{\{venue_name\}\}/g, event.venue_name || '')
+    .replace(/\{\{address\}\}/g, event.address || '')
+    .replace(/\{\{blurb\}\}/g, event.blurb || '');
+}
+
+// ---------- continue to drafts ----------
+document.getElementById('generate-btn').addEventListener('click', () => {
   if (!state.channels.size) { toast('pick at least one channel'); return; }
   goToStep(3);
-  const drafts = document.getElementById('drafts');
-  drafts.innerHTML = '';
-
-  const aiChannels = Array.from(state.channels).filter((c) => c !== 'imessage');
-  // render shells
-  aiChannels.forEach((k) => drafts.appendChild(makeDraftShell(k)));
-
-  // iMessage panel
+  renderDraftCards();
+  setupGmailSendPanel();
   const imPanel = document.getElementById('imessage-panel');
   if (state.channels.has('imessage')) {
     imPanel.classList.remove('hidden');
@@ -297,78 +467,223 @@ document.getElementById('generate-btn').addEventListener('click', async () => {
   } else {
     imPanel.classList.add('hidden');
   }
-
-  // Gmail panel (shown when journalist_email channel is picked AND Gmail is connected)
-  setupGmailSendPanel();
-
-  if (!aiChannels.length) return;
-
-  try {
-    const r = await fetch('/api/generate-drafts', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        event: { ...state.event },
-        channels: aiChannels,
-        eventType: state.eventType,
-      }),
-    });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || 'generate failed');
-    state.drafts = data.drafts || {};
-    Object.entries(state.drafts).forEach(([k, text]) => fillDraft(k, text));
-  } catch (err) {
-    toast(err.message);
-    aiChannels.forEach((k) => fillDraft(k, '[error: ' + err.message + ']'));
-  }
 });
 
-const CHANNEL_LABELS = {
-  journalist_email: 'Journalist email',
-  subscriber_email: 'Shopify subscriber email',
-  reddit_nyc: 'Reddit — r/nyc + r/queens',
-  whatsapp_broadcast: 'WhatsApp broadcast',
-  substack_post: 'Substack post',
-  eventbrite_listing: 'Eventbrite listing',
-  partiful_copy: 'Partiful invite',
-};
+function renderDraftCards() {
+  const container = document.getElementById('drafts');
+  container.innerHTML = '';
+  const channels = Array.from(state.channels).filter((c) => c !== 'imessage');
+  channels.forEach((key) => {
+    const spec = CHANNEL_SPECS[key];
+    if (!spec) return;
+    const card = document.createElement('div');
+    card.className = 'draft-card';
+    card.dataset.key = key;
 
-function makeDraftShell(key) {
-  const el = document.createElement('div');
-  el.className = 'draft-card';
-  el.dataset.key = key;
-  el.innerHTML = `
-    <div class="draft-head">
-      <div class="draft-title">${escapeHtml(CHANNEL_LABELS[key] || key)}</div>
-      <div class="draft-actions">
-        <button class="mini-btn copy-btn">Copy</button>
+    if (key === 'instagram') {
+      card.innerHTML = `
+        <div class="draft-head">
+          <div class="draft-title">${escapeHtml(spec.label)}</div>
+        </div>
+        <div class="draft-template">${escapeHtml(spec.guidance)}</div>
+        <div class="draft-prompt-row">
+          <button class="mini-btn prompt-copy-btn">Copy caption prompt</button>
+          <span class="hint" style="font-size:12px;margin-left:8px">paste into Claude or ChatGPT</span>
+        </div>
+        <div class="ig-preview-wrap" id="ig-preview-wrap"></div>
+        <div class="draft-actions-row">
+          <button class="mini-btn dl-post-btn">Download post (1080×1350)</button>
+          <button class="mini-btn dl-story-btn">Download story (1080×1920)</button>
+        </div>`;
+      container.appendChild(card);
+
+      card.querySelector('.prompt-copy-btn').addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        await navigator.clipboard.writeText(buildDraftPrompt(key, state.event));
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = 'Copy caption prompt', 1500);
+      });
+
+      const postSvg = generateInstagramSVG(state.event, 'post');
+      const storySvg = generateInstagramSVG(state.event, 'story');
+      const wrap = card.querySelector('#ig-preview-wrap');
+      const postEl = document.createElement('div');
+      postEl.style.cssText = 'flex-shrink:0';
+      postEl.innerHTML = postSvg;
+      postEl.querySelector('svg').setAttribute('width', '270');
+      postEl.querySelector('svg').setAttribute('height', '338');
+      const storyEl = document.createElement('div');
+      storyEl.style.cssText = 'flex-shrink:0';
+      storyEl.innerHTML = storySvg;
+      storyEl.querySelector('svg').setAttribute('width', '152');
+      storyEl.querySelector('svg').setAttribute('height', '270');
+      wrap.appendChild(postEl);
+      wrap.appendChild(storyEl);
+
+      card.querySelector('.dl-post-btn').addEventListener('click', () => downloadSvg(postSvg, `pitara-post-${state.event.date || 'event'}.svg`));
+      card.querySelector('.dl-story-btn').addEventListener('click', () => downloadSvg(storySvg, `pitara-story-${state.event.date || 'event'}.svg`));
+      return;
+    }
+
+    card.innerHTML = `
+      <div class="draft-head">
+        <div class="draft-title">${escapeHtml(spec.label)}</div>
       </div>
-    </div>
-    <div class="draft-loading">drafting…</div>
-  `;
-  return el;
+      <div class="draft-template">${escapeHtml(spec.guidance)}</div>
+      <div class="draft-prompt-row">
+        <button class="mini-btn prompt-copy-btn">Copy prompt</button>
+        <span class="hint" style="font-size:12px;margin-left:8px">paste into Claude or ChatGPT → paste result below</span>
+      </div>
+      <textarea class="draft-body" placeholder="paste your draft here…" rows="6"></textarea>
+      <div class="draft-actions-row"></div>`;
+
+    container.appendChild(card);
+
+    const ta = card.querySelector('textarea.draft-body');
+    ta.addEventListener('input', () => { state.drafts[key] = ta.value; autoSize(ta); });
+
+    card.querySelector('.prompt-copy-btn').addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      await navigator.clipboard.writeText(buildDraftPrompt(key, state.event));
+      btn.textContent = 'Copied!';
+      setTimeout(() => btn.textContent = 'Copy prompt', 1500);
+    });
+
+    const actionsRow = card.querySelector('.draft-actions-row');
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'mini-btn copy-btn';
+    copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(ta.value || '');
+      copyBtn.classList.add('copied');
+      copyBtn.textContent = 'Copied';
+      setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.textContent = 'Copy'; }, 1500);
+    });
+    actionsRow.appendChild(copyBtn);
+
+    if (key === 'partiful_copy') {
+      const openBtn = makeOpenBtn('Open Partiful', 'https://partiful.com/e/create');
+      actionsRow.appendChild(openBtn);
+    }
+    if (key === 'substack_post') {
+      const openBtn = makeOpenBtn('Open Substack', 'https://substack.com/p/new');
+      actionsRow.appendChild(openBtn);
+    }
+    if (key === 'subscriber_email') {
+      const openBtn = makeOpenBtn('Open Shopify Email', 'https://admin.shopify.com/store/pitaraco/marketing');
+      actionsRow.appendChild(openBtn);
+    }
+    if (key === 'eventbrite_listing') {
+      const pubBtn = document.createElement('button');
+      pubBtn.className = 'mini-btn pub-btn';
+      pubBtn.textContent = 'Publish to Eventbrite';
+      pubBtn.addEventListener('click', async () => {
+        if (!ta.value.trim()) { toast('paste a draft first'); return; }
+        pubBtn.disabled = true;
+        pubBtn.textContent = 'Publishing…';
+        try {
+          const r = await fetch('/api/eventbrite/publish', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ event: { ...state.event }, draft: ta.value }),
+          });
+          const data = await r.json();
+          if (!r.ok) throw new Error(data.error || 'publish failed');
+          const badge = document.createElement('span');
+          badge.className = 'publish-badge';
+          badge.innerHTML = `Draft created — <a href="${escapeHtml(data.url)}" target="_blank">view on Eventbrite ↗</a>`;
+          actionsRow.appendChild(badge);
+          pubBtn.textContent = 'Published ✓';
+        } catch (err) {
+          toast(err.message);
+          pubBtn.disabled = false;
+          pubBtn.textContent = 'Publish to Eventbrite';
+        }
+      });
+      actionsRow.appendChild(pubBtn);
+    }
+  });
 }
 
-function fillDraft(key, text) {
-  const card = document.querySelector(`.draft-card[data-key="${key}"]`);
-  if (!card) return;
-  const loading = card.querySelector('.draft-loading');
-  if (loading) loading.remove();
-  let ta = card.querySelector('textarea.draft-body');
-  if (!ta) {
-    ta = document.createElement('textarea');
-    ta.className = 'draft-body';
-    card.appendChild(ta);
+function makeOpenBtn(label, url) {
+  const btn = document.createElement('button');
+  btn.className = 'mini-btn open-btn';
+  btn.textContent = label;
+  btn.addEventListener('click', () => window.open(url, '_blank'));
+  return btn;
+}
+
+// ---------- instagram svg ----------
+
+function generateInstagramSVG(event, type) {
+  const W = 1080;
+  const H = type === 'story' ? 1920 : 1350;
+  const month = event.date ? parseInt(event.date.split('-')[1], 10) : (new Date().getMonth() + 1);
+  const pal = getSeasonalPalette(month);
+
+  const d = event.date ? new Date(event.date + 'T12:00:00') : null;
+  const dayFull = d && !isNaN(d) ? d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) : '';
+  const timeStr = event.time_end ? `${fmt12(event.time_start)} – ${fmt12(event.time_end)}` : fmt12(event.time_start);
+
+  const nameParts = wrapSvgText(event.name || 'Event', 20);
+  const nameFS = 80;
+  const nameLH = 96;
+  const nameY = type === 'story' ? 420 : 300;
+  const detailsY = nameY + nameParts.length * nameLH + 64;
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+  <rect width="${W}" height="${H}" fill="${pal.bg}"/>
+  <rect x="0" y="0" width="${W}" height="10" fill="${pal.accent}"/>
+  <text x="80" y="108" font-family="Georgia, serif" font-size="30" fill="${pal.text}" opacity="0.42" letter-spacing="8">PITARA CO.</text>
+  <line x1="80" y1="140" x2="360" y2="140" stroke="${pal.accent}" stroke-width="2.5"/>
+  ${nameParts.map((line, i) => `<text x="80" y="${nameY + i * nameLH}" font-family="system-ui, -apple-system, sans-serif" font-size="${nameFS}" font-weight="700" fill="${pal.text}">${escSvg(line)}</text>`).join('\n  ')}
+  <text x="80" y="${detailsY}" font-family="Georgia, serif" font-size="38" fill="${pal.text}" opacity="0.82">${escSvg(dayFull)}</text>
+  <text x="80" y="${detailsY + 58}" font-family="Georgia, serif" font-size="33" fill="${pal.text}" opacity="0.62">${escSvg(timeStr)}</text>
+  <text x="80" y="${detailsY + 140}" font-family="system-ui, sans-serif" font-size="34" font-weight="600" fill="${pal.accent}">${escSvg(event.venue_name || '')}</text>
+  <text x="80" y="${detailsY + 190}" font-family="system-ui, sans-serif" font-size="27" fill="${pal.text}" opacity="0.52">${escSvg(event.address || '')}</text>
+  <rect x="0" y="${H - 96}" width="${W}" height="96" fill="${pal.accent}" opacity="0.1"/>
+  <text x="${W - 80}" y="${H - 30}" font-family="Georgia, serif" font-size="26" fill="${pal.text}" opacity="0.42" text-anchor="end">@pitaraco</text>
+</svg>`;
+}
+
+function getSeasonalPalette(month) {
+  if (month >= 3 && month <= 5) return { bg: '#f0ede4', accent: '#7a9b6e', text: '#2b2a24' };
+  if (month >= 6 && month <= 8) return { bg: '#f5ede0', accent: '#c46b2d', text: '#2b2a24' };
+  if (month >= 9 && month <= 10) return { bg: '#f0e8d8', accent: '#b55a2a', text: '#2b2a24' };
+  return { bg: '#e8e4ec', accent: '#5a4a7a', text: '#2b2a24' };
+}
+
+function wrapSvgText(text, maxChars) {
+  const words = (text || '').split(' ');
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    const next = cur ? cur + ' ' + w : w;
+    if (next.length > maxChars && cur) { lines.push(cur); cur = w; } else cur = next;
   }
-  ta.value = text;
-  autoSize(ta);
-  ta.addEventListener('input', () => { state.drafts[key] = ta.value; autoSize(ta); });
-  const copyBtn = card.querySelector('.copy-btn');
-  copyBtn.onclick = async () => {
-    await navigator.clipboard.writeText(ta.value);
-    copyBtn.classList.add('copied');
-    copyBtn.textContent = 'Copied';
-    setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.textContent = 'Copy'; }, 1500);
-  };
+  if (cur) lines.push(cur);
+  return lines.length ? lines : [''];
+}
+
+function escSvg(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function fmt12(t) {
+  if (!t) return '';
+  const [h, m] = t.split(':').map(Number);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${ampm}`;
+}
+
+function downloadSvg(svgStr, filename) {
+  const blob = new Blob([svgStr], { type: 'image/svg+xml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function autoSize(ta) {
@@ -734,12 +1049,14 @@ document.getElementById('gm-send-btn').addEventListener('click', async () => {
     row.querySelector('.im-status').textContent = 'sending';
     row.querySelector('.im-status').className = 'im-status sending';
     try {
+      const firstName = j.name.trim().split(/\s+/)[0] || 'there';
+      const personalizedBody = body.replace(/\{\{first_name\}\}/gi, firstName);
       const r = await fetch('/api/send-email', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           to: j.email,
           subject,
-          body,
+          body: personalizedBody,
           journalist_name: j.name,
           event_name: state.event.name,
         }),
@@ -780,6 +1097,47 @@ function toast(msg) {
   t.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+// ---------- sent log ----------
+
+async function loadSendLog() {
+  const loading = document.getElementById('sent-loading');
+  if (loading) { loading.textContent = 'loading…'; loading.classList.remove('hidden'); }
+  try {
+    const r = await fetch('/api/send-log');
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'failed to load');
+    renderSendLog(data.entries || []);
+  } catch (err) {
+    if (loading) loading.textContent = 'error: ' + err.message;
+  }
+}
+
+function renderSendLog(entries) {
+  const loading = document.getElementById('sent-loading');
+  if (loading) loading.classList.add('hidden');
+  const list = document.getElementById('sent-list');
+  if (!list) return;
+  if (!entries.length) {
+    list.innerHTML = '<li class="hint" style="padding:12px 0">no emails sent yet.</li>';
+    return;
+  }
+  list.innerHTML = entries.map((e) => `
+    <li class="sent-row">
+      <div class="sent-date">${escapeHtml(formatSentDate(e.sent_at))}</div>
+      <div class="sent-to">${escapeHtml(e.journalist_name || e.journalist_email || '')}</div>
+      <div class="sent-subject">${escapeHtml(e.subject || '')}</div>
+      <div class="sent-status ${escapeHtml(e.status || '')}">${escapeHtml(e.status || '')}</div>
+    </li>
+  `).join('');
+}
+
+function formatSentDate(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  } catch { return iso; }
 }
 
 // initial
