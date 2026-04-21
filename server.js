@@ -594,12 +594,61 @@ function nyTimeToUtc(dateStr, timeStr) {
   return new Date(Date.UTC(y, mo - 1, d, h + offsetH, m)).toISOString().slice(0, 19) + 'Z';
 }
 
+function addHours(utcIso, hours) {
+  const d = new Date(utcIso);
+  d.setUTCHours(d.getUTCHours() + hours);
+  return d.toISOString().slice(0, 19) + 'Z';
+}
+
 function escapeHtmlServer(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function textToHtml(text) {
   return '<p>' + escapeHtmlServer(text).replace(/\n\n+/g, '</p><p>').replace(/\n/g, '<br>') + '</p>';
+}
+
+// Extract a field from a draft that may use either "Field: value" or "**Field**\nvalue" format
+function extractDraftField(draft, field) {
+  const inlineRe = new RegExp(`^\\s*${field}[^:\\n]*:\\s*(.+)$`, 'im');
+  const inline = draft.match(inlineRe);
+  if (inline) return inline[1].trim();
+  const headerRe = new RegExp(`\\*\\*${field}[^*]*\\*\\*\\s*\\n+([^\\n*][^\\n]*)`, 'i');
+  const header = draft.match(headerRe);
+  if (header) return header[1].trim();
+  return '';
+}
+
+function extractDraftDescription(draft) {
+  let desc = draft;
+  const headerRe = /(?:^|\n)\s*(?:\*\*)?Description[^*\n:]*(?:\*\*)?\s*:?\s*\n+/i;
+  const m = desc.match(headerRe);
+  if (m) desc = desc.slice(m.index + m[0].length);
+  else {
+    desc = desc
+      .replace(/^\s*(?:\*\*)?Title[^*\n:]*(?:\*\*)?\s*:?\s*\n?[^\n]*\n?/im, '')
+      .replace(/^\s*(?:\*\*)?Summary[^*\n:]*(?:\*\*)?\s*:?\s*\n?[^\n]*\n?/im, '');
+  }
+  desc = desc.replace(/\n+\s*(?:\*\*)?Details[^*\n:]*(?:\*\*)?\s*:?\s*\n[\s\S]*$/i, '');
+  desc = desc.replace(/\*\*(.+?)\*\*/g, '$1');
+  desc = desc.replace(/^---+$/gm, '');
+  return desc.trim();
+}
+
+function parseUSAddress(fullAddress) {
+  const parts = (fullAddress || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (parts.length >= 3) {
+    const stateZip = parts[parts.length - 1].split(/\s+/);
+    return {
+      address_1: parts.slice(0, -2).join(', '),
+      city: parts[parts.length - 2],
+      region: stateZip[0] || 'NY',
+      postal_code: stateZip[1] || '',
+      country: 'US',
+    };
+  }
+  if (parts.length === 2) return { address_1: parts[0], city: parts[1], region: 'NY', country: 'US' };
+  return { address_1: fullAddress || '', city: 'New York', region: 'NY', country: 'US' };
 }
 
 // ---------- send log ----------
@@ -630,16 +679,14 @@ app.post('/api/eventbrite/publish', async (req, res) => {
     if (!event || !draft) return res.status(400).json({ error: 'event and draft required' });
     if (!event.date || !event.time_start) return res.status(400).json({ error: 'event must have date and start time' });
 
-    const titleMatch = draft.match(/^Title:\s*(.+)/im);
-    const title = titleMatch ? titleMatch[1].trim() : (event.name || 'Untitled Event');
-
-    const summaryMatch = draft.match(/^Summary[^:]*:\s*(.+)/im);
-    const summary = summaryMatch ? summaryMatch[1].trim().slice(0, 140) : '';
+    const title = extractDraftField(draft, 'Title') || event.name || 'Untitled Event';
+    const summary = extractDraftField(draft, 'Summary').slice(0, 140);
+    const description = extractDraftDescription(draft) || event.blurb || '';
 
     const startUtc = nyTimeToUtc(event.date, event.time_start);
     const endUtc = event.time_end
       ? nyTimeToUtc(event.date, event.time_end)
-      : nyTimeToUtc(event.date, event.time_start);
+      : addHours(startUtc, 2);
 
     const orgRes = await fetch('https://www.eventbriteapi.com/v3/users/me/organizations/', {
       headers: { 'Authorization': `Bearer ${token}` },
@@ -651,10 +698,27 @@ app.post('/api/eventbrite/publish', async (req, res) => {
     const orgId = orgData.organizations?.[0]?.id;
     if (!orgId) return res.status(502).json({ error: 'No Eventbrite organization found on this account' });
 
+    let venueId = null;
+    if (event.venue_name && event.address) {
+      const venueRes = await fetch(`https://www.eventbriteapi.com/v3/organizations/${orgId}/venues/`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          venue: { name: event.venue_name, address: parseUSAddress(event.address) },
+        }),
+      });
+      if (venueRes.ok) {
+        const venueData = await venueRes.json();
+        venueId = venueData.id;
+      } else {
+        console.error('venue create failed:', await venueRes.text());
+      }
+    }
+
     const payload = {
       event: {
         name: { html: escapeHtmlServer(title) },
-        description: { html: textToHtml(draft) },
+        description: { html: textToHtml(description) },
         ...(summary && { summary }),
         start: { utc: startUtc, timezone: 'America/New_York' },
         end: { utc: endUtc, timezone: 'America/New_York' },
@@ -662,6 +726,7 @@ app.post('/api/eventbrite/publish', async (req, res) => {
         listed: false,
         shareable: true,
         online_event: false,
+        ...(venueId && { venue_id: venueId }),
       },
     };
 
