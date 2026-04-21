@@ -563,6 +563,92 @@ textarea { resize: vertical; min-height: 110px; }
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+/* ---------- paste-into-llm draft cards ---------- */
+.draft-template {
+  background: var(--line-soft);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  color: var(--ink-soft);
+  margin-bottom: 10px;
+  line-height: 1.6;
+}
+.draft-prompt-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.prompt-copy-btn {
+  font-size: 12.5px;
+  padding: 4px 12px;
+  background: var(--cream-2);
+  border-color: var(--line);
+  color: var(--ink-soft);
+}
+.prompt-copy-btn:hover { background: var(--ink); color: var(--cream); border-color: var(--ink); }
+.draft-actions-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  align-items: center;
+}
+.mini-btn.open-btn {
+  border-color: var(--olive);
+  color: var(--olive);
+}
+.mini-btn.open-btn:hover { background: var(--olive); color: #fff; }
+.mini-btn.pub-btn {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+.mini-btn.pub-btn:hover { background: var(--blue); color: #fff; }
+.publish-badge {
+  font-size: 13px;
+  color: #2d7a3a;
+  font-weight: 500;
+}
+.publish-badge a { color: #2d7a3a; }
+
+/* ---------- instagram preview ---------- */
+.ig-preview-wrap {
+  background: #1a1a1a;
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  margin-bottom: 10px;
+  align-items: flex-start;
+}
+.ig-preview-wrap svg { border-radius: 6px; display: block; }
+.ig-preview-label {
+  font-size: 11px;
+  color: #aaa;
+  text-align: center;
+  margin-top: 4px;
+}
+
+/* ---------- sent tab ---------- */
+.sent-list { list-style: none; margin: 0; padding: 0; }
+.sent-row {
+  display: grid;
+  grid-template-columns: 150px 1fr 2fr 80px;
+  gap: 14px;
+  align-items: center;
+  padding: 11px 4px;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 13.5px;
+}
+.sent-row:last-child { border-bottom: 0; }
+.sent-date { color: var(--ink-soft); font-size: 12px; }
+.sent-to { font-weight: 500; }
+.sent-subject { color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sent-status.sent { color: #2d7a3a; font-weight: 500; }
+.sent-status.failed { color: #c0392b; font-weight: 500; }
+
 /* responsive */
 @media (max-width: 680px) {
   .top { padding: 16px 20px; flex-direction: column; gap: 12px; align-items: flex-start; }

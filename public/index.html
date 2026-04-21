@@ -20,6 +20,7 @@
       <button class="tab active" data-view="flow">Compose</button>
       <button class="tab" data-view="journalists">Journalists</button>
       <button class="tab" data-view="contacts">Contacts</button>
+      <button class="tab" data-view="sent">Sent</button>
     </nav>
   </header>
 
@@ -164,24 +165,29 @@
               <div class="c-sub">Name, tagline, description.</div>
             </div>
           </label>
+          <label class="channel-card" data-channel="instagram">
+            <input type="checkbox" />
+            <div>
+              <div class="c-title">Instagram post + story</div>
+              <div class="c-sub">Branded graphic + caption prompt. Download &amp; geo-tag manually.</div>
+            </div>
+          </label>
           <label class="channel-card" data-channel="imessage">
             <input type="checkbox" />
             <div>
               <div class="c-title">iMessage to friends</div>
-              <div class="c-sub">Fixed template. Local only (Mac).</div>
+              <div class="c-sub">Sends to all contacts. Local only (Mac).</div>
             </div>
           </label>
         </div>
 
         <div id="imessage-contacts" class="field hidden">
-          <label>iMessage — pick groups to include</label>
-          <div id="group-chips" class="chip-row"></div>
           <div id="imessage-preview" class="preview-box"></div>
         </div>
 
         <div class="actions">
           <button type="button" class="btn ghost" data-back="1">← Back</button>
-          <button type="button" class="btn primary" id="generate-btn">Generate drafts →</button>
+          <button type="button" class="btn primary" id="generate-btn">Continue to drafts →</button>
         </div>
       </section>
 
@@ -344,6 +350,15 @@
           <input type="search" id="contact-search" placeholder="search name, phone, tag" />
         </div>
         <ul id="contact-list" class="contact-list"></ul>
+      </div>
+    </section>
+    <!-- ============ SENT VIEW ============ -->
+    <section id="view-sent" class="view">
+      <h1 class="display">Sent.</h1>
+      <p class="sub">Every email logged here. Data also lives in your Google Sheet's <code>send_log</code> tab.</p>
+      <div class="card">
+        <div id="sent-loading" class="hint">loading…</div>
+        <ul id="sent-list" class="sent-list"></ul>
       </div>
     </section>
   </main>
