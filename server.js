@@ -615,6 +615,16 @@ app.post('/api/eventbrite/publish', async (req, res) => {
       ? nyTimeToUtc(event.date, event.time_end)
       : nyTimeToUtc(event.date, event.time_start);
 
+    const orgRes = await fetch('https://www.eventbriteapi.com/v3/users/me/organizations/', {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    const orgData = await orgRes.json();
+    if (!orgRes.ok) {
+      return res.status(502).json({ error: orgData.error_description || orgData.error || 'Eventbrite auth failed' });
+    }
+    const orgId = orgData.organizations?.[0]?.id;
+    if (!orgId) return res.status(502).json({ error: 'No Eventbrite organization found on this account' });
+
     const payload = {
       event: {
         name: { html: escapeHtmlServer(title) },
@@ -629,7 +639,7 @@ app.post('/api/eventbrite/publish', async (req, res) => {
       },
     };
 
-    const r = await fetch('https://www.eventbriteapi.com/v3/events/', {
+    const r = await fetch(`https://www.eventbriteapi.com/v3/organizations/${orgId}/events/`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
