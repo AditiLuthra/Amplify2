@@ -501,32 +501,58 @@ app.post('/api/fetch-event', async (req, res) => {
     const { url } = req.body || {};
     if (!url) return res.status(400).json({ error: 'url required' });
 
-    const prompt = `Use web search to look up this event page and extract its details: ${url}
+    const prompt = `Look up this event page and extract its details: ${url}
 
-Return ONLY a single JSON object with these keys (no markdown, no commentary):
-{
-  "name": "",
-  "date": "YYYY-MM-DD",
-  "time_start": "HH:MM",
-  "time_end": "HH:MM or empty string if no end time",
-  "venue_name": "",
-  "address": "",
-  "blurb": "organizer's own words describing the event, preserved verbatim where possible"
-}
-
-If a field is unknown leave it as an empty string. Use 24-hour time. Preserve the organizer's voice exactly in the blurb.`;
+Use the web_search tool to find the page content, then call the submit_event tool with the details you found. If a field is unknown, use an empty string. Use 24-hour time format. Preserve the organizer's voice exactly in the blurb.`;
 
     const response = await anthropic.messages.create({
       model: MODEL,
-      max_tokens: 1500,
-      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
+      max_tokens: 2000,
+      tools: [
+        { type: 'web_search_20250305', name: 'web_search', max_uses: 5 },
+        {
+          name: 'submit_event',
+          description: 'Submit the extracted event details after finding them via web search.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'Event title' },
+              date: { type: 'string', description: 'YYYY-MM-DD format' },
+              time_start: { type: 'string', description: 'HH:MM in 24-hour format' },
+              time_end: { type: 'string', description: 'HH:MM in 24-hour format, or empty string if no end time listed' },
+              venue_name: { type: 'string' },
+              address: { type: 'string' },
+              blurb: { type: 'string', description: "Organizer's own description, preserved verbatim" },
+            },
+            required: ['name'],
+          },
+        },
+      ],
       messages: [{ role: 'user', content: prompt }],
     });
 
+    const toolUse = (response.content || []).find((b) => b.type === 'tool_use' && b.name === 'submit_event');
+    if (toolUse && toolUse.input) {
+      const ev = toolUse.input;
+      return res.json({ event: {
+        name: ev.name || '',
+        date: ev.date || '',
+        time_start: ev.time_start || '',
+        time_end: ev.time_end || '',
+        venue_name: ev.venue_name || '',
+        address: ev.address || '',
+        blurb: ev.blurb || '',
+      }});
+    }
+
     const text = extractText(response);
     const json = extractJSON(text);
-    if (!json) return res.status(502).json({ error: 'could not parse event', raw: text });
-    res.json({ event: json });
+    if (json) return res.json({ event: json });
+
+    const msg = text && text.length < 400
+      ? `could not extract event — model said: "${text.trim()}"`
+      : 'could not extract event — the page may require login or be inaccessible to web search. Try filling the fields manually.';
+    return res.status(502).json({ error: msg, raw: text });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -615,6 +641,16 @@ app.post('/api/eventbrite/publish', async (req, res) => {
       ? nyTimeToUtc(event.date, event.time_end)
       : nyTimeToUtc(event.date, event.time_start);
 
+    const orgRes = await fetch('https://www.eventbriteapi.com/v3/users/me/organizations/', {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    const orgData = await orgRes.json();
+    if (!orgRes.ok) {
+      return res.status(502).json({ error: orgData.error_description || orgData.error || 'Eventbrite auth failed' });
+    }
+    const orgId = orgData.organizations?.[0]?.id;
+    if (!orgId) return res.status(502).json({ error: 'No Eventbrite organization found on this account' });
+
     const payload = {
       event: {
         name: { html: escapeHtmlServer(title) },
@@ -629,7 +665,7 @@ app.post('/api/eventbrite/publish', async (req, res) => {
       },
     };
 
-    const r = await fetch('https://www.eventbriteapi.com/v3/events/', {
+    const r = await fetch(`https://www.eventbriteapi.com/v3/organizations/${orgId}/events/`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
