@@ -382,19 +382,14 @@ Venue: {{venue_name}}
 Address: {{address}}
 Blurb (use verbatim as one paragraph): "{{blurb}}"
 
-Format exactly as:
+Format EXACTLY like this, plain text only — NO markdown, NO asterisks, NO bold:
+
 Title: [event title]
-Summary (under 140 chars): [one-line summary]
+Summary: [one-line summary under 140 chars]
 Description:
-[2–3 short paragraphs. Include the blurb verbatim as its own paragraph.]
+[2–3 short paragraphs. Include the blurb verbatim as its own paragraph. No headings, no lists.]
 
-Details:
-- Day & date: {{day}}, {{date}}
-- Time: {{time}}
-- Venue: {{venue_name}}
-- Address: {{address}}
-
-Do not include price, ticket tiers, or ticket links — those are added in Eventbrite directly.`,
+Do NOT include a Details section, price, ticket tiers, or ticket links — the app auto-adds venue/date/time and Eventbrite handles tickets.`,
   },
   partiful_copy: {
     label: 'Partiful invite',
