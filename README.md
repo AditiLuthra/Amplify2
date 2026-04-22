@@ -2,14 +2,25 @@
 
 An event awareness agent for NYC & Houston pop-ups. Drafts emails, Reddit posts, WhatsApp, Substack, Eventbrite, Partiful, and iMessage broadcasts — in the organizer's own words. Sends journalist pitches from your Gmail, with the database of local reporters living in your own Google Sheet.
 
+## Two ways to use it
+
+### 1. Claude Desktop + MCP (recommended, conversational)
+
+Chat with Claude to drive everything. No frontend needed. See **[mcp/SETUP.md](mcp/SETUP.md)** for the 5-minute install.
+
+> "Add Priya Krishna at NYT to my journalists. Then draft a pitch for the June 7 coffee night and send it to my 3 NYC food journalists with cold relationship."
+
+Claude calls your Vercel API via MCP tools, does everything in one conversation.
+
+### 2. Original web frontend (fallback, form-driven)
+
+Open `amplify2-love.vercel.app` or run locally with `npm start` → http://localhost:3000. Form-based UI with paste-into-LLM draft cards. Useful if Claude Desktop isn't set up yet.
+
 ## Stack
 
-- Node.js + Express backend
-- Vanilla single-page frontend (`public/`)
-- Anthropic API with web search for auto-fetching partner events (Partiful, Luma, Eventbrite)
-- Gmail API for sending journalist pitches from your own address
-- Google Sheets as the journalist database (lives on your Drive)
-- AppleScript bridge to Mac Messages for iMessage sends (local only)
+- **Backend (`server.js`)**: Node.js + Express, deployed on Vercel. Handles Gmail OAuth, Google Sheet I/O, Eventbrite publish, URL fetch via Anthropic web search.
+- **MCP server (`mcp/`)**: standalone Node.js server that Claude Desktop spawns locally. Exposes the Vercel API as Claude tools. Also handles local-only actions (iMessage via AppleScript, Instagram SVG generation).
+- **Frontend (`public/`)**: vanilla HTML/CSS/JS. Optional — the MCP path replaces it.
 
 ## Run locally
 
