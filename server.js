@@ -398,69 +398,135 @@ app.post('/api/send-email', async (req, res) => {
 });
 
 
-// ---------- contacts ----------
+// ---------- contacts (Google Sheet: "contacts" tab) ----------
 
-async function readContacts() {
+const CONTACT_COLS = ['name', 'phone', 'tags', 'notes', 'created_at'];
+
+async function readContactsFromSheet() {
+  const sheets = getSheets();
   try {
-    const raw = await fs.readFile(CONTACTS_PATH, 'utf8');
-    const data = JSON.parse(raw);
-    return Array.isArray(data.contacts) ? data.contacts : [];
-  } catch {
-    return [];
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetId(),
+      range: 'contacts!A1:Z',
+    });
+    const objects = rowsToObjects(res.data.values || [], CONTACT_COLS);
+    return objects.map((c) => ({
+      ...c,
+      tags: c.tags ? c.tags.split(',').map((s) => s.trim()).filter(Boolean) : [],
+    }));
+  } catch (err) {
+    if (err.message?.includes('Unable to parse range') || err.code === 400) return [];
+    throw err;
   }
 }
 
-async function writeContacts(contacts) {
-  await fs.writeFile(CONTACTS_PATH, JSON.stringify({ contacts }, null, 2));
+async function appendContactToSheet(c) {
+  const sheets = getSheets();
+  const row = objectToRow({
+    name: c.name,
+    phone: c.phone,
+    tags: c.tags || [],
+    notes: c.notes || '',
+    created_at: new Date().toISOString(),
+  }, CONTACT_COLS);
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: sheetId(),
+    range: 'contacts!A:Z',
+    valueInputOption: 'RAW',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: [row] },
+  });
+}
+
+async function deleteContactFromSheet(phone) {
+  const sheets = getSheets();
+  const all = await readContactsFromSheet();
+  const target = all.find((c) => c.phone === phone);
+  if (!target) return false;
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId() });
+  const tab = meta.data.sheets.find((s) => s.properties.title === 'contacts');
+  if (!tab) throw new Error('contacts tab not found — create one with columns: name, phone, tags, notes, created_at');
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: sheetId(),
+    requestBody: {
+      requests: [{
+        deleteDimension: {
+          range: {
+            sheetId: tab.properties.sheetId,
+            dimension: 'ROWS',
+            startIndex: target._rowNumber - 1,
+            endIndex: target._rowNumber,
+          },
+        },
+      }],
+    },
+  });
+  return true;
 }
 
 app.get('/api/contacts', async (_req, res) => {
-  const contacts = await readContacts();
-  res.json({ contacts });
+  try {
+    const contacts = await readContactsFromSheet();
+    res.json({ contacts });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/contacts', async (req, res) => {
-  const { name, phone, tags } = req.body || {};
-  if (!name || !phone) return res.status(400).json({ error: 'name and phone required' });
-  const contacts = await readContacts();
-  const contact = {
-    id: randomUUID(),
-    name: String(name).trim(),
-    phone: normalizePhone(phone),
-    tags: Array.isArray(tags) ? tags.filter(Boolean) : (tags ? [String(tags).trim()] : []),
-  };
-  contacts.push(contact);
-  await writeContacts(contacts);
-  res.json({ contact });
+  try {
+    const { name, phone, tags, notes } = req.body || {};
+    if (!name || !phone) return res.status(400).json({ error: 'name and phone required' });
+    const normalized = normalizePhone(phone);
+    const existing = await readContactsFromSheet();
+    if (existing.some((c) => c.phone === normalized)) {
+      return res.status(409).json({ error: 'a contact with that phone already exists' });
+    }
+    const contact = {
+      name: String(name).trim(),
+      phone: normalized,
+      tags: Array.isArray(tags) ? tags.filter(Boolean) : (tags ? String(tags).split(',').map((s) => s.trim()).filter(Boolean) : []),
+      notes: notes ? String(notes).trim() : '',
+    };
+    await appendContactToSheet(contact);
+    res.json({ contact });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.delete('/api/contacts/:id', async (req, res) => {
-  const contacts = await readContacts();
-  const next = contacts.filter((c) => c.id !== req.params.id);
-  await writeContacts(next);
-  res.json({ ok: true });
+app.delete('/api/contacts/:phone', async (req, res) => {
+  try {
+    const phone = decodeURIComponent(req.params.phone);
+    const ok = await deleteContactFromSheet(phone);
+    if (!ok) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/contacts/import-vcf', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'file required' });
   const parsed = parseVCF(req.file.buffer.toString('utf8'));
   const defaultTag = (req.body?.tag || '').toString().trim();
-  const existing = await readContacts();
+  const existing = await readContactsFromSheet();
   const existingPhones = new Set(existing.map((c) => c.phone));
   const added = [];
   for (const p of parsed) {
     if (!p.phone || existingPhones.has(p.phone)) continue;
     const contact = {
-      id: randomUUID(),
       name: p.name || 'Unknown',
       phone: p.phone,
       tags: defaultTag ? [defaultTag] : [],
     };
-    existing.push(contact);
+    await appendContactToSheet(contact);
     added.push(contact);
     existingPhones.add(p.phone);
   }
-  await writeContacts(existing);
   res.json({ added: added.length, contacts: added });
 });
 
