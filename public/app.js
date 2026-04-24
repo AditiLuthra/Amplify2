@@ -799,13 +799,13 @@ function renderContacts(filter = '') {
       <span class="contact-name">${escapeHtml(c.name)}</span>
       <span class="contact-phone">${escapeHtml(c.phone)}</span>
       <span class="tag-dots">${(c.tags || []).map((t) => `<span class="tag-dot">${escapeHtml(t)}</span>`).join('')}</span>
-      <button class="del-btn" data-id="${c.id}">remove</button>
+      <button class="del-btn" data-phone="${escapeHtml(c.phone)}">remove</button>
     </li>
   `).join('');
   list.querySelectorAll('.del-btn').forEach((b) =>
     b.addEventListener('click', async () => {
       if (!confirm('Remove contact?')) return;
-      await fetch('/api/contacts/' + b.dataset.id, { method: 'DELETE' });
+      await fetch('/api/contacts/' + encodeURIComponent(b.dataset.phone), { method: 'DELETE' });
       loadContacts();
     })
   );
